@@ -1,0 +1,45 @@
+需求：TypeScript/Node.js 通知中心后端，多渠道 / 模板 / 批量 / 队列 / 追踪 / 偏好。
+
+背景：每个内部系统都要"发通知"——订单状态变更、密码重置、运营活动、系统告警。我们想要一个统一通知中心：业务方调统一 API、通知中心按用户偏好选渠道、按模板渲染、走队列异步发送。技术栈 Node.js + Express + Bull（Redis 队列）+ SQLite + SendGrid/Twilio mock。
+
+核心功能：
+- 多渠道：邮件、短信、站内信、Push（FCM）、Webhook
+- 模板：Handlebars / EJS 模板引擎，模板按场景分类（order_created / password_reset / alert）
+- 偏好：用户可设"订单类只邮件、告警类邮件 + 短信、运营类关闭"
+- 批量：业务方传 list，一次性发 1 万条（走队列异步）
+- 队列：Bull / BullMQ 任务队列，失败重试、指数退避、死信队列
+- 追踪：每条通知有唯一 ID、状态（pending / sent / failed / read）、发送时间、回执
+- 静默时段：用户可设"23:00-07:00 不发短信"，非紧急通知积压到 07:00 后发
+- 频率限制：同类型通知 1 小时内最多 5 条（防骚扰）
+- Webhook 签名：HMAC-SHA256 签名让业务方验真
+- 模板版本：模板改了不影响历史发送记录（每个发送存模板快照）
+
+涉及模块：
+- `src/api/`：notifications、templates、preferences、batches
+- `src/channels/`：email、sms、in-app、push、webhook 适配器
+- `src/templates/`：模板引擎、版本管理
+- `src/queue/`：Bull / BullMQ 队列、生产者、消费者
+- `src/services/`：偏好匹配、频率限制、静默时段
+- `src/track/`：发送状态追踪、回执处理
+- `src/dashboard/`：管理后台（发件箱 / 失败重发 / 统计）
+
+注意事项：
+- 通知唯一 ID 用雪花算法（13 位时间戳 + 机器 ID + 序列），去重用
+- 模板渲染要 sandbox 化：Handlebars 默认转义，避免模板注入
+- 模板版本：发送时存 `template_snapshot`（渲染后的内容），不要存模板 ID 否则模板改了追溯不到
+- 队列失败重试用 Bull 的 `attempts: 5, backoff: { type: 'exponential' }`
+- 死信队列：失败 5 次入 DLQ，告警通知运维
+- 偏好匹配：用户没显式设置时用默认偏好（全部渠道 + 立即发送）
+- 静默时段：紧急通知（password_reset）跳过静默；普通通知顺延
+- 频率限制用 Redis 滑动窗口：1 小时内 5 条
+- 批量发送：1 万条拆 100 队列任务（每条 100 条），避免单任务过大
+- 邮件发送 mock：写到 `tmp/emails/{id}.html`，不接真 SMTP
+- 短信发送 mock：写日志 + 计数
+- 站内信：写到 `in_app_notifications` 表
+- Push 通知 mock：仅记录
+- Webhook 签名：发送时 HMAC，业务方收到后用共享密钥验签
+- 发送追踪：`notification_logs` 表存（id、user_id、channel、template_id、status、sent_at、error）
+- 用户读取站内信：调用 `mark_read` API，更新 `read_at`
+- 退订：邮件底部加退订链接 → 调用 `unsubscribe(token)` → 偏好标记"营销类 = 不发"
+- 测试用 jest + nock（mock HTTP），覆盖各渠道
+- 监控：Prometheus 指标（发送数 / 失败数 / 队列积压）

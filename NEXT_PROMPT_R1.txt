@@ -1,0 +1,1 @@
+TypeScript 通知服务根本编译不过，npm run build 报 4 处错误都是 Property 'changes' does not exist on type 'Statement'，定位在 src/db/notification、preference、template 那几个 db.ts 文件，better-sqlite3 的 Statement 类型在当前版本下没有 changes 字段。编译不过所有通知 / 模板 / 偏好功能都没法跑。检查修复一下。
